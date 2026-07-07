@@ -1,0 +1,82 @@
+name: hourly-build
+
+on:
+  schedule:
+    # 평일 09:05~15:05 KST 매시 + 15:35 마감 직후 (UTC = KST-9)
+    - cron: '5 0-6 * * 1-5'
+    - cron: '35 6 * * 1-5'
+  workflow_dispatch:
+
+concurrency:
+  group: build
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      # build-data.js는 <root>/public/data 에 쓰고, alerts 30일 이력 병합을 위해
+      # 기존 alerts.json이 그 위치에 있어야 한다 → 직전 커밋의 data/를 시딩
+      - name: Seed previous data
+        run: |
+          mkdir -p public/data
+          cp -r data/. public/data/
+
+      - name: Build (KOSPI200 재수집·재스코어링)
+        run: node scripts/build-data.js
+
+      # 장 휴장 등으로 시세·점수가 전혀 안 변했으면(updatedAt 제외 비교) 커밋 스킵
+      - name: Detect changes
+        id: diff
+        run: |
+          node -e '
+            const fs = require("fs");
+            const norm = (p) => { const j = JSON.parse(fs.readFileSync(p, "utf8")); delete j.updatedAt; return JSON.stringify(j); };
+            const same = norm("data/summary.json") === norm("public/data/summary.json");
+            fs.appendFileSync(process.env.GITHUB_OUTPUT, "changed=" + (same ? "no" : "yes") + "\n");
+            console.log(same ? "시장 데이터 무변경 — 커밋 스킵" : "데이터 변경 감지");
+          '
+
+      - name: Push new-signal notifications (ntfy)
+        if: steps.diff.outputs.changed == 'yes'
+        run: |
+          node -e '
+            const fs = require("fs");
+            const j = JSON.parse(fs.readFileSync("public/data/alerts.json", "utf8"));
+            const fresh = (j.signals || []).filter((s) => s.isNew);
+            console.log("신규 신호:", fresh.length);
+            (async () => {
+              for (const s of fresh) {
+                const res = await fetch("https://ntfy.sh/krating-gxsignal-7k2m4x", {
+                  method: "POST",
+                  headers: {
+                    "Title": "K-Rating golden cross",
+                    "Click": "https://kospi-k-rating.web.app/#/stock/" + encodeURIComponent(s.code),
+                    "Tags": "chart_with_upwards_trend",
+                  },
+                  body: `${s.name} ${Number(s.price).toLocaleString("ko-KR")}원 — ${s.desc}`,
+                });
+                console.log(s.code, s.name, res.status);
+              }
+            })().catch((e) => { console.error("ntfy 발송 실패(빌드는 계속):", e.message); });
+          '
+
+      - name: Commit & push
+        if: steps.diff.outputs.changed == 'yes'
+        run: |
+          cp -r public/data/. data/
+          git add data
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "data: rebuild $(TZ=Asia/Seoul date +'%Y-%m-%d %H:%M KST')"
+          git push
