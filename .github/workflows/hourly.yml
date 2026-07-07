@@ -2,9 +2,9 @@ name: hourly-build
 
 on:
   schedule:
-    # 평일 09:05~15:05 KST 매시 + 15:35 마감 직후 (UTC = KST-9)
-    - cron: '5 0-6 * * 1-5'
-    - cron: '35 6 * * 1-5'
+    # 평일 09:13~15:13 KST 매시 + 15:43 마감 직후 (혼잡 분:05/:35 회피 — GitHub cron 지연 완화) (UTC = KST-9)
+    - cron: '13 0-6 * * 1-5'
+    - cron: '43 6 * * 1-5'
   workflow_dispatch:
 
 concurrency:
