@@ -6,7 +6,7 @@
 
 ## 갱신 주기
 
-`.github/workflows/hourly.yml` — 평일 09:05~15:05 KST 매시 + 15:35 장 마감 직후,
+`.github/workflows/hourly.yml` — 평일 09:13~15:13 KST 매시 + 15:43 장 마감 직후,
 `scripts/build-data.js`를 전체 재실행해 시세·점수·등급·알림을 재생성하고 변경 시에만 커밋한다.
 MACD 0선 아래 골든크로스가 새로 발생하면 ntfy.sh 토픽 `krating-gxsignal-7k2m4x`로 푸시 알림을 보낸다.
 
