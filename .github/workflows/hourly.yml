@@ -1,4 +1,5 @@
 name: hourly-build
+# 2026-07-08: 7/7 GitHub Actions 장애 중 등록된 스케줄이 발화하지 않아 재등록용 커밋 (공식 처방: 기본 브랜치 커밋 → 스케줄 재동기화)
 
 on:
   schedule:
