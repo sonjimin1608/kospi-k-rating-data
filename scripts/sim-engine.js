@@ -151,39 +151,126 @@ function multifactorScore(ind, i, c) {
   return { score, agree };
 }
 
+/**
+ * SELL 점수(0~100) — 우리 SELL 지표의 기술적 드라이버를 캔들로 복원(룩어헤드 없음).
+ * 데드크로스·역배열·MA 동시하회·과열·밴드워크·모멘텀 악화를 이벤트 가산.
+ */
+function sellScore(ind, i, c) {
+  if (i < 1) return null;
+  const { rsi, macd, signal, ma20, ma60, pctB, mom20 } = ind;
+  const close = c[i].close;
+  let s = 0, any = false;
+  if (isNum(macd[i]) && isNum(signal[i]) && isNum(macd[i - 1]) && isNum(signal[i - 1])) {
+    any = true; if (macd[i - 1] >= signal[i - 1] && macd[i] < signal[i]) s += 25;
+  }
+  if (isNum(ma20[i]) && isNum(ma60[i])) {
+    any = true;
+    if (close < ma20[i] && close < ma60[i]) s += 20;
+    if (ma20[i] < ma60[i]) s += 15;
+  }
+  if (isNum(rsi[i])) { any = true; if (rsi[i] >= 80) s += 18; else if (rsi[i] >= 75) s += 12; }
+  if (isNum(pctB[i]) && pctB[i] <= 0.05) s += 12;
+  if (isNum(mom20[i]) && mom20[i] < 0) s += 10;
+  if (isNum(ma20[i]) && close < ma20[i]) s += 8;
+  return any ? Math.min(100, s) : null;
+}
+
+/** 우리가 푸시 알림 보내는 신호: MACD 0선 아래 골든크로스 */
+function gcBelowZero(ind, i) {
+  const { macd, signal } = ind;
+  return i >= 1 && isNum(macd[i]) && isNum(signal[i]) && isNum(macd[i - 1]) && isNum(signal[i - 1]) &&
+    macd[i] < 0 && macd[i - 1] <= signal[i - 1] && macd[i] > signal[i];
+}
+function deadCross(ind, i) {
+  const { macd, signal } = ind;
+  return i >= 1 && isNum(macd[i]) && isNum(signal[i]) && isNum(macd[i - 1]) && isNum(signal[i - 1]) &&
+    macd[i - 1] >= signal[i - 1] && macd[i] < signal[i];
+}
+
+/**
+ * 사이징(수량 결정)도 전술의 일부다.
+ *  - mode 'risk'  : 고정분수 리스크 — 1회 손실 한도 = 자산×riskPct, 손절폭으로 나눠 수량 결정
+ *                   (손절이 타이트할수록 크게, 넓을수록 작게 → 거래별 리스크 균등화)
+ *  - mode 'equal' : 초기자본 고정 비중(단순 등분)
+ *  공통 상한: 자산×maxWeightPct, 보유 현금, 최대 동시보유 maxPositions.
+ */
+const SIZING_RISK = (riskPct, maxWeightPct, maxPositions) => ({ mode: 'risk', riskPct, maxWeightPct, maxPositions });
+const SIZING_EQUAL = (weightPct, maxPositions) => ({ mode: 'equal', weightPct, maxWeightPct: weightPct, maxPositions });
+
+/**
+ * 채택 전략 — 백테스트 실증으로 수익성이 확인된 것만 유지한다.
+ * (탈락: MACD 정배열 추세추종 −31%, 다요인 합의 −21%, 과매도 반등 표본 8건 — 삭제)
+ */
 const STRATEGIES = [
   {
-    id: 'trend_macd_ma_align',
-    name: 'MACD 골든크로스 정배열 추세추종',
-    archetype: '추세추종',
-    stopPct: 5, takeProfitPct: 15, trailingPct: 8, maxHoldDays: 20,
+    id: 'alpha_multifactor_momentum',
+    name: '다요인 모멘텀 알파',
+    archetype: '진화 최적화 · 다요인',
+    stopPct: 8, takeProfitPct: 23, trailingPct: 0, maxHoldDays: 17,
+    sizing: SIZING_RISK(2.0, 25, 5),
     entry(ind, i, c) {
-      const { rsi, macd, signal, ma20, ma60, volZ } = ind;
-      if (i < 1 || [rsi[i], macd[i], signal[i], macd[i - 1], signal[i - 1], ma20[i], ma60[i], volZ[i]].some((v) => !isNum(v))) return false;
-      const gc = macd[i - 1] <= signal[i - 1] && macd[i] > signal[i];
-      return gc && ma20[i] > ma60[i] && c[i].close > ma20[i] && rsi[i] >= 45 && rsi[i] <= 65 && volZ[i] >= 0;
+      const { macd, signal, hist, ma60, pctB } = ind;
+      const sc = multifactorScore(ind, i, c);
+      if (!sc || [macd[i], signal[i], hist[i], ma60[i], pctB[i]].some((v) => !isNum(v))) return false;
+      return sc.score >= 74 && sc.agree >= 3 && macd[i] > signal[i] && hist[i] > 0 &&
+        c[i].close > ma60[i] && pctB[i] >= 0.5;
     },
     exitSignal(ind, i, c) {
-      const { macd, signal, ma20 } = ind;
-      if (i < 1 || [macd[i], signal[i], macd[i - 1], signal[i - 1], ma20[i]].some((v) => !isNum(v))) return false;
-      const dc = macd[i - 1] >= signal[i - 1] && macd[i] < signal[i];
-      return dc || c[i].close < ma20[i];
+      const { ma20, ma60 } = ind;
+      if (deadCross(ind, i)) return true;
+      if (isNum(ma20[i]) && c[i].close < ma20[i]) return true;
+      if (isNum(ma60[i]) && c[i].close < ma60[i]) return true;
+      return false;
     },
   },
   {
-    id: 'reversion_rsi_bb_snapback',
-    name: '과매도 볼린저 하단 반등',
-    archetype: '역추세 반등',
-    stopPct: 5, takeProfitPct: 8, trailingPct: 4, maxHoldDays: 8,
+    id: 'alpha_breakout_consensus',
+    name: '돌파 합의 알파',
+    archetype: '진화 최적화 · 돌파',
+    stopPct: 7, takeProfitPct: 26, trailingPct: 0, maxHoldDays: 17,
+    sizing: SIZING_RISK(2.0, 25, 5),
     entry(ind, i, c) {
-      const { rsi, pctB, volZ } = ind;
-      if (i < 1 || [rsi[i], pctB[i], volZ[i]].some((v) => !isNum(v)) || !isNum(c[i - 1].close) || !isNum(c[i].open)) return false;
-      return rsi[i] <= 32 && pctB[i] <= 0.10 && c[i].close > c[i].open && c[i].close > c[i - 1].close && volZ[i] >= 1.0;
+      const { macd, signal, hist, hi20, mom20 } = ind;
+      const sc = multifactorScore(ind, i, c);
+      if (!sc || [macd[i], signal[i], hist[i], hi20[i], mom20[i]].some((v) => !isNum(v))) return false;
+      return sc.score >= 74 && sc.agree >= 3 && macd[i] > signal[i] && hist[i] > 0 &&
+        c[i].close > hi20[i] && mom20[i] > 0;
+    },
+    exitSignal() { return false; }, // 가격 트리거(손절·익절·시간)만으로 청산
+  },
+  {
+    id: 'alpha_breakout_ma20',
+    name: '신고가 추세 알파',
+    archetype: '진화 최적화 · 돌파',
+    stopPct: 7, takeProfitPct: 28, trailingPct: 0, maxHoldDays: 17,
+    sizing: SIZING_RISK(2.0, 25, 5),
+    entry(ind, i, c) {
+      const { ma20, hi20, mom20 } = ind;
+      const sc = multifactorScore(ind, i, c);
+      if (!sc || [ma20[i], hi20[i], mom20[i]].some((v) => !isNum(v))) return false;
+      return sc.score >= 74 && sc.agree >= 3 && c[i].close > ma20[i] && c[i].close > hi20[i] && mom20[i] > 0;
+    },
+    exitSignal(ind, i) {
+      const { macd, signal, hist } = ind;
+      if (deadCross(ind, i)) return true;
+      if (isNum(macd[i]) && isNum(signal[i]) && isNum(hist[i]) && isNum(hist[i - 1]) &&
+        macd[i] < signal[i] && hist[i] < hist[i - 1]) return true;
+      return false;
+    },
+  },
+  {
+    id: 'score_buy_sell',
+    name: 'K-Rating 점수 전술 (BUY≥75 / SELL≥55)',
+    archetype: '자체 점수',
+    stopPct: 7, takeProfitPct: 20, trailingPct: 0, maxHoldDays: 30,
+    sizing: SIZING_RISK(2.0, 25, 5),
+    entry(ind, i, c) {
+      const sc = multifactorScore(ind, i, c);
+      return !!sc && sc.score >= 75;
     },
     exitSignal(ind, i, c) {
-      const { rsi, ma20 } = ind;
-      if ([rsi[i], ma20[i]].some((v) => !isNum(v))) return false;
-      return rsi[i] >= 50 || c[i].close >= ma20[i];
+      const se = sellScore(ind, i, c);
+      return se != null && se >= 55;
     },
   },
   {
@@ -191,6 +278,7 @@ const STRATEGIES = [
     name: '20일 신고가 돌파 + 거래량 급증',
     archetype: '신고가 돌파',
     stopPct: 7, takeProfitPct: 30, trailingPct: 12, maxHoldDays: 40,
+    sizing: SIZING_EQUAL(20, 5),
     entry(ind, i, c) {
       const { rsi, macd, signal, hist, ma20, ma60, hi20, volZ } = ind;
       if ([rsi[i], macd[i], signal[i], hist[i], ma20[i], ma60[i], hi20[i], volZ[i]].some((v) => !isNum(v))) return false;
@@ -204,30 +292,42 @@ const STRATEGIES = [
     },
   },
   {
-    id: 'multifactor_consensus_regime',
-    name: '다요인 합의 추세-돌파 종합',
-    archetype: '다요인 종합',
-    stopPct: 7, takeProfitPct: 20, trailingPct: 10, maxHoldDays: 25,
-    entry(ind, i, c) {
-      const { rsi, macd, signal, ma20, ma60, volZ } = ind;
-      const sc = multifactorScore(ind, i, c);
-      if (!sc) return false;
-      return sc.score >= 70 && ma20[i] > ma60[i] && c[i].close > ma20[i] && macd[i] > signal[i] &&
-        rsi[i] < 72 && volZ[i] > -0.5 && sc.agree >= 3;
-    },
-    exitSignal(ind, i, c) {
-      const { rsi, macd, signal, hist, ma20, ma60 } = ind;
-      const sc = multifactorScore(ind, i, c);
-      if (!sc || [rsi[i], macd[i], signal[i], hist[i], hist[i - 1], ma20[i], ma60[i]].some((v) => !isNum(v))) return false;
-      const close = c[i].close;
-      const breakTrend = close < ma20[i] && macd[i] < signal[i];
-      const regimeBreak = close < ma60[i];
-      const momFade = macd[i] < signal[i] && hist[i] < hist[i - 1];
-      const overheat = rsi[i] >= 80 && hist[i] < hist[i - 1];
-      return breakTrend || regimeBreak || momFade || overheat || sc.score <= 45;
-    },
+    id: 'macd_alert_combo',
+    name: 'MACD 알림 + 콤보 매도',
+    archetype: '알림 신호 · 매도 최적화',
+    stopPct: 8, takeProfitPct: 25, trailingPct: 10, maxHoldDays: 60,
+    sizing: SIZING_RISK(1.5, 20, 5),
+    entry(ind, i) { return gcBelowZero(ind, i); },
+    exitSignal(ind, i) { return deadCross(ind, i); },
   },
 ];
+
+/* ───────────────────────── 사이징(수량) ───────────────────────── */
+
+function sizingOf(strat, cfg) {
+  return strat.sizing || { mode: 'equal', weightPct: cfg.posFrac * 100, maxWeightPct: cfg.posFrac * 100, maxPositions: cfg.maxPositions };
+}
+function maxPositionsOf(strat, cfg) {
+  const sz = sizingOf(strat, cfg);
+  return isNum(sz.maxPositions) ? sz.maxPositions : cfg.maxPositions;
+}
+/** 전략의 사이징 규칙에 따른 매수 수량 (0이면 진입 불가) */
+function sizeShares(strat, cfg, price, buyMult, cash, equity) {
+  if (!isNum(price) || price <= 0) return 0;
+  const sz = sizingOf(strat, cfg);
+  const base = isNum(equity) && equity > 0 ? equity : cfg.startCash;
+  let budget;
+  if (sz.mode === 'risk') {
+    // 1회 손실 한도 = 자산×riskPct → 손절폭으로 나눠 명목 포지션 산출
+    const stopFrac = Math.max(strat.stopPct || 5, 0.5) / 100;
+    budget = (base * (sz.riskPct / 100)) / stopFrac;
+  } else {
+    budget = cfg.startCash * ((sz.weightPct != null ? sz.weightPct : cfg.posFrac * 100) / 100);
+  }
+  const capWeight = base * ((sz.maxWeightPct != null ? sz.maxWeightPct : 25) / 100);
+  budget = Math.min(budget, capWeight, cash);
+  return Math.floor(budget / (price * buyMult));
+}
 
 /* ───────────────────────── 청산 판정 (갭 우선) ───────────────────────── */
 
@@ -256,7 +356,7 @@ function decideExit(pos, bar, strat) {
 function runPortfolioBacktest(universe, strat, cfg = DEFAULT_CFG) {
   const buyMult = 1 + cfg.commission + cfg.slippage;
   const sellMult = 1 - cfg.commission - cfg.slippage - cfg.sellTax;
-  const perBudget = cfg.startCash * cfg.posFrac;
+  const maxPos = maxPositionsOf(strat, cfg);
 
   const stocks = [];
   const byCode = new Map();
@@ -271,6 +371,7 @@ function runPortfolioBacktest(universe, strat, cfg = DEFAULT_CFG) {
   if (windowDates.length === 0) return emptyResult(cfg);
 
   let cash = cfg.startCash;
+  let lastEquity = cfg.startCash; // 전일 종가 기준 자산(사이징 기준 — 인과적)
   const positions = new Map();
   const trades = [];
   const equityCurve = [];
@@ -295,15 +396,14 @@ function runPortfolioBacktest(universe, strat, cfg = DEFAULT_CFG) {
   for (let w = 0; w < windowDates.length; w++) {
     const date = windowDates[w];
 
-    // A. 어제 신호 진입 체결 (오늘 시가)
+    // A. 어제 신호 진입 체결 (오늘 시가) — 수량은 전략의 사이징 규칙으로 결정
     for (const code of pending) {
-      if (heldCount() >= cfg.maxPositions) break;
+      if (heldCount() >= maxPos) break;
       const s = byCode.get(code); if (!s) continue;
       const li = s.dateIdx.get(date); if (li == null) continue;
       const openPx = isNum(s.c[li].open) ? s.c[li].open : s.c[li].close;
       if (!isNum(openPx) || openPx <= 0) continue;
-      const budget = Math.min(cash, perBudget);
-      const shares = Math.floor(budget / (openPx * buyMult));
+      const shares = sizeShares(strat, cfg, openPx, buyMult, cash, lastEquity);
       if (shares <= 0) continue;
       const spend = shares * openPx * buyMult;
       if (spend > cash + 1e-6) continue;
@@ -351,6 +451,7 @@ function runPortfolioBacktest(universe, strat, cfg = DEFAULT_CFG) {
       const px = li != null && isNum(s.c[li].close) ? s.c[li].close : p.entryPrice;
       mtm += p.shares * px;
     }
+    lastEquity = mtm;
     equityCurve.push({ date, equity: Math.round(mtm) });
   }
 
@@ -405,7 +506,7 @@ function buildResult(trades, equityCurve, finalEquity, windowLen, cfg) {
 function advancePaper(prevState, universe, strat, cfg = DEFAULT_CFG) {
   const buyMult = 1 + cfg.commission + cfg.slippage;
   const sellMult = 1 - cfg.commission - cfg.slippage - cfg.sellTax;
-  const perBudget = cfg.startCash * cfg.posFrac;
+  const maxPos = maxPositionsOf(strat, cfg);
 
   const byCode = new Map(universe.map((u) => [u.code, u]));
   const anyC = universe.find((u) => u.candles && u.candles.length);
@@ -458,11 +559,16 @@ function advancePaper(prevState, universe, strat, cfg = DEFAULT_CFG) {
     if (strat.entry(recomputeIndicators(c), li, c)) cands.push(u);
   }
   cands.sort((a, b) => (a.code < b.code ? -1 : a.code > b.code ? 1 : 0));
+  // 사이징 기준 자산 = 현금 + 보유 평가액
+  let equityNow = cash;
+  for (const code of Object.keys(holdings)) {
+    const p = holdings[code]; const px = priceOf(byCode.get(code));
+    equityNow += p.shares * (isNum(px) ? px : p.entryPrice);
+  }
   for (const u of cands) {
-    if (heldCount() >= cfg.maxPositions) break;
+    if (heldCount() >= maxPos) break;
     const price = priceOf(u); if (!isNum(price) || price <= 0) continue;
-    const budget = Math.min(cash, perBudget);
-    const shares = Math.floor(budget / (price * buyMult));
+    const shares = sizeShares(strat, cfg, price, buyMult, cash, equityNow);
     if (shares <= 0) continue;
     const spend = shares * price * buyMult; if (spend > cash + 1e-6) continue;
     cash -= spend;
@@ -493,4 +599,7 @@ function advancePaper(prevState, universe, strat, cfg = DEFAULT_CFG) {
   return state;
 }
 
-module.exports = { STRATEGIES, DEFAULT_CFG, recomputeIndicators, multifactorScore, decideExit, runPortfolioBacktest, advancePaper };
+module.exports = {
+  STRATEGIES, DEFAULT_CFG, recomputeIndicators, multifactorScore, sellScore,
+  gcBelowZero, deadCross, sizingOf, sizeShares, decideExit, runPortfolioBacktest, advancePaper,
+};

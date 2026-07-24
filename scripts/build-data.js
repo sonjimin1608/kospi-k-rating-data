@@ -2113,9 +2113,16 @@ async function main() {
       strategies: sim.STRATEGIES.map((st) => ({
         id: st.id, name: st.name, archetype: st.archetype,
         stopPct: st.stopPct, takeProfitPct: st.takeProfitPct, trailingPct: st.trailingPct, maxHoldDays: st.maxHoldDays,
+        sizing: sim.sizingOf(st, cfg),
         ...(stratRationale[st.id] || {}),
       })),
     }));
+    // 폐기된 전략의 모의투자 계좌 파일 정리
+    const liveIds = new Set(sim.STRATEGIES.map((s) => s.id));
+    for (const f of fs.readdirSync(SIM_DIR)) {
+      const m = /^paper_(.+)\.json$/.exec(f);
+      if (m && !liveIds.has(m[1])) { fs.unlinkSync(path.join(SIM_DIR, f)); console.log(`  폐기 전략 계좌 삭제: ${f}`); }
+    }
     // 백테스트(최근 1년)
     const btOut = { generatedAt: updatedAt, periodDays: cfg.lookbackDays, startCash: cfg.startCash, costs, strategies: {} };
     for (const st of sim.STRATEGIES) {
