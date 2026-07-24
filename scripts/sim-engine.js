@@ -291,21 +291,6 @@ const STRATEGIES = [
       return c[i].close < ma20[i] || (macd[i] < signal[i] && hist[i] < 0);
     },
   },
-  {
-    id: 'macd_alert_combo',
-    name: 'MACD 알림 + 콤보 매도',
-    archetype: '알림 신호 · 매도 최적화',
-    stopPct: 8, takeProfitPct: 25, trailingPct: 10, maxHoldDays: 60,
-    sizing: SIZING_RISK(1.5, 20, 5),
-    // 알림 신호(0선 아래 골든크로스) 중에서도 장기 추세가 살아있는 눌림만 매수
-    entry(ind, i, c) {
-      if (!gcBelowZero(ind, i)) return false;
-      const { ma60, mom20 } = ind;
-      if (!isNum(ma60[i]) || !isNum(mom20[i])) return false;
-      return c[i].close > ma60[i] && mom20[i] > -10;
-    },
-    exitSignal(ind, i) { return deadCross(ind, i); },
-  },
 ];
 
 /* ───────────────────────── 시장 레짐 필터 ─────────────────────────
