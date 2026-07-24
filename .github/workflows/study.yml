@@ -1,0 +1,31 @@
+name: strategy-studies
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build
+  cancel-in-progress: false
+
+jobs:
+  studies:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Exit (sell) study
+        run: node scripts/exit-study.js
+      - name: Score study
+        run: node scripts/score-study.js
+      - name: Commit results
+        run: |
+          git add data/sim/exit_study.json data/sim/score_study.json
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "study: 매도방식·점수 백테스트 $(TZ=Asia/Seoul date +'%Y-%m-%d %H:%M KST')" || echo "변경 없음"
+          git push
