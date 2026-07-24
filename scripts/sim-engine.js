@@ -292,55 +292,18 @@ const STRATEGIES = [
     },
   },
   {
-    id: 'alpha_multifactor_regime',
-    name: '다요인 모멘텀 알파 + 시장 레짐 필터',
-    archetype: '진화 최적화 · 레짐 필터',
-    stopPct: 8, takeProfitPct: 23, trailingPct: 0, maxHoldDays: 17,
-    sizing: SIZING_RISK(2.0, 25, 5),
-    regimeFilter: true,
-    entry(ind, i, c) {
-      const { macd, signal, hist, ma60, pctB } = ind;
-      const sc = multifactorScore(ind, i, c);
-      if (!sc || [macd[i], signal[i], hist[i], ma60[i], pctB[i]].some((v) => !isNum(v))) return false;
-      return sc.score >= 74 && sc.agree >= 3 && macd[i] > signal[i] && hist[i] > 0 &&
-        c[i].close > ma60[i] && pctB[i] >= 0.5;
-    },
-    exitSignal(ind, i, c) {
-      const { ma20, ma60 } = ind;
-      if (deadCross(ind, i)) return true;
-      if (isNum(ma20[i]) && c[i].close < ma20[i]) return true;
-      if (isNum(ma60[i]) && c[i].close < ma60[i]) return true;
-      return false;
-    },
-  },
-  {
-    id: 'alpha_breakout_ma20_regime',
-    name: '신고가 추세 알파 + 시장 레짐 필터',
-    archetype: '진화 최적화 · 레짐 필터',
-    stopPct: 7, takeProfitPct: 28, trailingPct: 0, maxHoldDays: 17,
-    sizing: SIZING_RISK(2.0, 25, 5),
-    regimeFilter: true,
-    entry(ind, i, c) {
-      const { ma20, hi20, mom20 } = ind;
-      const sc = multifactorScore(ind, i, c);
-      if (!sc || [ma20[i], hi20[i], mom20[i]].some((v) => !isNum(v))) return false;
-      return sc.score >= 74 && sc.agree >= 3 && c[i].close > ma20[i] && c[i].close > hi20[i] && mom20[i] > 0;
-    },
-    exitSignal(ind, i) {
-      const { macd, signal, hist } = ind;
-      if (deadCross(ind, i)) return true;
-      if (isNum(macd[i]) && isNum(signal[i]) && isNum(hist[i]) && isNum(hist[i - 1]) &&
-        macd[i] < signal[i] && hist[i] < hist[i - 1]) return true;
-      return false;
-    },
-  },
-  {
     id: 'macd_alert_combo',
     name: 'MACD 알림 + 콤보 매도',
     archetype: '알림 신호 · 매도 최적화',
     stopPct: 8, takeProfitPct: 25, trailingPct: 10, maxHoldDays: 60,
     sizing: SIZING_RISK(1.5, 20, 5),
-    entry(ind, i) { return gcBelowZero(ind, i); },
+    // 알림 신호(0선 아래 골든크로스) 중에서도 장기 추세가 살아있는 눌림만 매수
+    entry(ind, i, c) {
+      if (!gcBelowZero(ind, i)) return false;
+      const { ma60, mom20 } = ind;
+      if (!isNum(ma60[i]) || !isNum(mom20[i])) return false;
+      return c[i].close > ma60[i] && mom20[i] > -10;
+    },
     exitSignal(ind, i) { return deadCross(ind, i); },
   },
 ];

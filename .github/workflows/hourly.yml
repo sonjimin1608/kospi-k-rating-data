@@ -78,6 +78,7 @@ jobs:
         if: steps.diff.outputs.changed == 'yes'
         run: |
           cp -r public/data/. data/
+          rm -rf data/sim && cp -r public/data/sim data/sim
           git add data
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
