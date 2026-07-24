@@ -1,0 +1,1 @@
+{"strategyId":"reversion_rsi_bb_snapback","name":"과매도 볼린저 하단 반등","startedAt":"2026-07-24","startCash":10000000,"cash":10000000,"equity":10000000,"returnPct":0,"updatedAt":"2026-07-24","holdings":{},"positions":[],"tradeLog":[],"equityCurve":[{"date":"2026-07-24","equity":10000000}]}
