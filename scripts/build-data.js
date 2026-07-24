@@ -6,7 +6,7 @@
  *
  * V2 변경 (docs/SCORING_V2.md §5·§6, docs/V2_CONTRACT.md §2):
  *  - 수집: 일봉 open/high/low, 52주 고저, 배당수익률, BPS, 외인소진율,
- *    목표주가 컨센서스(priceTargetMean/recommMean), 외인·기관 5일 수급(dealTrendInfos)
+ *    목표주가 컨센서스(priceTargetMean/recommMean), 투자자별 5일 수급(dealTrendInfos: 외국인·기관·개인)
  *  - 신규 지표: 볼린저 %b(20,2), 52주 위치, 거래대금 Z-score(20), MA20 이격도, ATR14%, 수급 flowRatio
  *  - FIN/OUT/TECH_buy 수정 + SELL 전면 재설계 (0.25×FINRISK + 0.20×OUTRISK + 0.55×TECH_sell 이벤트 가산형)
  *  - parts 객체화({score,label,explain,inputs,reasons}) + indicators + targetPrice + verdict + confidence
@@ -184,7 +184,7 @@ function emptyIntegration() {
     per: null, pbr: null, cnsPer: null, cnsEps: null, dividendYield: null,
     bps: null, foreignRate: null, high52: null, low52: null,
     priceTargetMean: null, recommMean: null,
-    dealTrend: null, // { netForeign5, netOrgan5, vol5, days }
+    dealTrend: null, // { netForeign5, netOrgan5, netIndiv5, vol5, days }
     industryCode: null,
   };
 }
@@ -213,18 +213,26 @@ function parseIntegration(integ) {
     out.recommMean = num(integ.consensusInfo.recommMean);
   }
   if (Array.isArray(integ.dealTrendInfos) && integ.dealTrendInfos.length > 0) {
-    let nf = 0, no = 0, vol = 0, days = 0;
+    let nf = 0, no = 0, ni = 0, vol = 0, days = 0, indivDays = 0;
     for (const d of integ.dealTrendInfos.slice(0, 5)) {
       const f = num(d.foreignerPureBuyQuant);
       const o = num(d.organPureBuyQuant);
+      const iv = num(d.individualPureBuyQuant);
       const v = num(d.accumulatedTradingVolume);
-      if (f == null && o == null && v == null) continue;
+      if (f == null && o == null && iv == null && v == null) continue;
       nf += f ?? 0;
       no += o ?? 0;
+      if (iv != null) { ni += iv; indivDays++; }
       vol += v ?? 0;
       days++;
     }
-    if (days > 0) out.dealTrend = { netForeign5: nf, netOrgan5: no, vol5: vol, days };
+    if (days > 0) {
+      out.dealTrend = {
+        netForeign5: nf, netOrgan5: no,
+        netIndiv5: indivDays > 0 ? ni : null,
+        vol5: vol, days,
+      };
+    }
   }
   return out;
 }
@@ -404,10 +412,21 @@ function computeTechnicals(candles, integ) {
   }
   if (high52 > low52) pos52 = clamp(((closes[last] - low52) / (high52 - low52)) * 100, 0, 100);
 
-  // --- 외인/기관 5일 수급 flowRatio — §2.8 ---
-  let flowRatio = null;
+  // --- 투자자별 5일 수급 — §2.8 (외국인·기관·개인) ---
+  let flowRatio = null; // 외인+기관 순매수/거래량 (기존 유지 — 하위호환)
+  let flow = null;      // 투자자별 5일 net & net/거래량
   if (integ && integ.dealTrend && integ.dealTrend.vol5 > 0) {
-    flowRatio = (integ.dealTrend.netForeign5 + integ.dealTrend.netOrgan5) / integ.dealTrend.vol5;
+    const dt = integ.dealTrend;
+    flowRatio = (dt.netForeign5 + dt.netOrgan5) / dt.vol5;
+    flow = {
+      foreign5: dt.netForeign5,
+      organ5: dt.netOrgan5,
+      indiv5: dt.netIndiv5,
+      vol5: dt.vol5,
+      foreignRatio: dt.netForeign5 / dt.vol5,
+      organRatio: dt.netOrgan5 / dt.vol5,
+      indivRatio: dt.netIndiv5 == null ? null : dt.netIndiv5 / dt.vol5,
+    };
   }
 
   // 최근 3봉 내 크로스 탐지
@@ -463,6 +482,7 @@ function computeTechnicals(candles, integ) {
     high52,
     low52,
     flowRatio,
+    flow,
     trendState,
     close,
     lastDate: candles[last].date,
@@ -1248,6 +1268,11 @@ function scoreTech(t, X) {
       else if (t.pos52 <= 15) trendBuy -= 6;
     }
     if (t.flowRatio != null && t.flowRatio >= 0.05) trendBuy += 3;
+    // 투자자별 확증(V2.1): 외국인·기관 동반 순매수(+2), 개인 순매도로 확증(+1)
+    if (t.flow) {
+      if (t.flow.foreignRatio > 0 && t.flow.organRatio > 0) trendBuy += 2;
+      if (t.flow.indivRatio != null && t.flow.indivRatio <= -0.05 && t.flowRatio >= 0) trendBuy += 1;
+    }
     if (t.volumeZ != null && t.volumeZ >= 2 && t.momentum20 != null && t.momentum20 > 0) trendBuy += 4;
     trendBuy = clamp(trendBuy, 0, 100);
   }
@@ -1307,6 +1332,13 @@ function scoreTech(t, X) {
     sellSignals.push({ label: `하락 동반 거래대금 급증(Z ${round1(t.volumeZ)})`, pts: 10 });
   if (t.flowRatio != null && t.flowRatio <= -0.05)
     sellSignals.push({ label: '외인+기관 5일 순매도', pts: 5 });
+  // 투자자별 확증(V2.1): 외국인·기관 동반 순매도(+3), 개인 순매수·스마트머니 이탈(+3)
+  if (t.flow) {
+    if (t.flow.foreignRatio < 0 && t.flow.organRatio < 0)
+      sellSignals.push({ label: '외국인·기관 동반 순매도', pts: 3 });
+    if (t.flow.indivRatio != null && t.flow.indivRatio >= 0.05 && t.flowRatio <= 0)
+      sellSignals.push({ label: '개인 순매수·외인/기관 이탈', pts: 3 });
+  }
   if (
     t.atrPct != null && X.P.atrPct(t.atrPct) != null && X.P.atrPct(t.atrPct) >= 0.9 &&
     t.momentum20 != null && t.momentum20 < 0
@@ -1456,12 +1488,15 @@ function buildTechParts(t, tc) {
     t.volumeZ != null && t.volumeZ >= 2 &&
     ((t.dayChange != null && t.dayChange < 0) || (t.momentum20 != null && t.momentum20 < 0));
   const flowPct = t.flowRatio == null ? null : round2(t.flowRatio * 100);
+  const fPct = t.flow && t.flow.foreignRatio != null ? round2(t.flow.foreignRatio * 100) : null;
+  const oPct = t.flow && t.flow.organRatio != null ? round2(t.flow.organRatio * 100) : null;
+  const iPct = t.flow && t.flow.indivRatio != null ? round2(t.flow.indivRatio * 100) : null;
   const volume = partObj(
     null, '거래량·수급',
     [
-      '거래대금이 최근 20일 평균 대비 통계적으로 얼마나 튀었는지(Z-score)와 외국인·기관 5일 순매수 방향을 봅니다.',
+      '거래대금이 최근 20일 평균 대비 통계적으로 얼마나 튀었는지(Z-score)와 투자자별(외국인·기관·개인) 5일 순매수 방향을 봅니다.',
       t.volumeZ != null || flowPct != null
-        ? `${t.volumeZ != null ? `거래대금 Z ${round1(t.volumeZ)} (2 이상이면 급증)` : ''}${t.volumeZ != null && flowPct != null ? ', ' : ''}${flowPct != null ? `외인+기관 5일 순매수/거래량 ${flowPct}%` : ''}.`
+        ? `${t.volumeZ != null ? `거래대금 Z ${round1(t.volumeZ)} (2 이상이면 급증)` : ''}${t.volumeZ != null && flowPct != null ? ', ' : ''}${flowPct != null ? `외인+기관 5일 순매수/거래량 ${flowPct}%` : ''}${iPct != null ? ` (개인 ${iPct}%)` : ''}.`
         : '거래대금·수급 데이터가 부족합니다.',
       zUp ? '상승 동반 대금 급증(매수 관점 가점) → 추세 파트에 +4점 반영'
         : zDown ? '하락 동반 대금 급증(매도 관점 가점) → 매도 신호에 +10점 반영'
@@ -1471,6 +1506,9 @@ function buildTechParts(t, tc) {
     ],
     [
       { label: '거래대금 Z(20)', value: round1(t.volumeZ) },
+      { label: '외국인 5일 순매수/거래량', value: fPct == null ? null : `${fPct}%` },
+      { label: '기관 5일 순매수/거래량', value: oPct == null ? null : `${oPct}%` },
+      { label: '개인 5일 순매수/거래량', value: iPct == null ? null : `${iPct}%` },
       { label: '외인+기관 5일 순매수/거래량', value: flowPct == null ? null : `${flowPct}%` },
     ],
     [zUp ? '상승 동반 거래대금 급증' : null, zDown ? '하락 동반 거래대금 급증' : null]
@@ -2034,6 +2072,14 @@ async function main() {
         disparity20: round1(tech.disparity20),
         atrPct: round1(tech.atrPct),
         flowRatio: tech.flowRatio == null ? null : Math.round(tech.flowRatio * 10000) / 10000,
+        flow: tech.flow ? {
+          foreign5: tech.flow.foreign5,
+          organ5: tech.flow.organ5,
+          indiv5: tech.flow.indiv5,
+          foreignRatio: Math.round(tech.flow.foreignRatio * 10000) / 10000,
+          organRatio: Math.round(tech.flow.organRatio * 10000) / 10000,
+          indivRatio: tech.flow.indivRatio == null ? null : Math.round(tech.flow.indivRatio * 10000) / 10000,
+        } : null,
         foreignRate: round2(fund.foreignRate),
         trendState: tech.trendState,
       },
