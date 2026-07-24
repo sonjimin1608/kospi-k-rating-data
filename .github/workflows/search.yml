@@ -1,0 +1,39 @@
+name: strategy-search
+on:
+  workflow_dispatch:
+    inputs:
+      gens:
+        description: '세대 수'
+        default: '12'
+      pop:
+        description: '개체군 크기'
+        default: '48'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build
+  cancel-in-progress: false
+
+jobs:
+  search:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Run evolutionary strategy search
+        env:
+          SEARCH_GENS: ${{ inputs.gens }}
+          SEARCH_POP: ${{ inputs.pop }}
+        run: node scripts/strategy-search.js
+      - name: Commit results
+        run: |
+          git add data/sim/search_results.json
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "search: 전략 진화 탐색 결과 $(TZ=Asia/Seoul date +'%Y-%m-%d %H:%M KST')" || echo "변경 없음"
+          git push

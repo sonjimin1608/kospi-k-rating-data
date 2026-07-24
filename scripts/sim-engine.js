@@ -263,7 +263,7 @@ function runPortfolioBacktest(universe, strat, cfg = DEFAULT_CFG) {
   for (const s of universe) {
     const c = s.candles || [];
     if (c.length < 61) continue;
-    const obj = { code: s.code, name: s.name, c, ind: recomputeIndicators(c), dateIdx: new Map(c.map((k, ix) => [k.date, ix])) };
+    const obj = { code: s.code, name: s.name, c, ind: s.ind || recomputeIndicators(c), dateIdx: new Map(c.map((k, ix) => [k.date, ix])) };
     stocks.push(obj); byCode.set(s.code, obj);
   }
   const allDates = [...new Set(stocks.flatMap((s) => s.c.map((k) => k.date)))].sort();
@@ -493,4 +493,4 @@ function advancePaper(prevState, universe, strat, cfg = DEFAULT_CFG) {
   return state;
 }
 
-module.exports = { STRATEGIES, DEFAULT_CFG, recomputeIndicators, decideExit, runPortfolioBacktest, advancePaper };
+module.exports = { STRATEGIES, DEFAULT_CFG, recomputeIndicators, multifactorScore, decideExit, runPortfolioBacktest, advancePaper };
