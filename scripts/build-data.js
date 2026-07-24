@@ -2094,6 +2094,49 @@ async function main() {
   const summary = { updatedAt, count: summaryStocks.length, stocks: summaryStocks };
   fs.writeFileSync(path.join(OUT_DIR, 'summary.json'), JSON.stringify(summary));
 
+  // --- 시뮬레이션: 백테스트(1년) + 모의투자(전진) — sim-engine ---
+  try {
+    const sim = require('./sim-engine');
+    const SIM_DIR = path.join(OUT_DIR, 'sim');
+    fs.mkdirSync(SIM_DIR, { recursive: true });
+    const simUniverse = scored.map((s) => ({
+      code: s.r.meta.code, name: s.r.meta.name, candles: s.r.candles, price: s.r.meta.price,
+    }));
+    const cfg = sim.DEFAULT_CFG;
+    const costs = { commission: cfg.commission, slippage: cfg.slippage, sellTax: cfg.sellTax };
+    // 전략 근거 메타(deep-research) 병합
+    let stratRationale = {};
+    try { stratRationale = JSON.parse(fs.readFileSync(path.join(__dirname, 'strategy-meta.json'), 'utf8')); } catch { stratRationale = {}; }
+    // 전략 메타
+    fs.writeFileSync(path.join(SIM_DIR, 'strategies.json'), JSON.stringify({
+      updatedAt, startCash: cfg.startCash, maxPositions: cfg.maxPositions, costs,
+      strategies: sim.STRATEGIES.map((st) => ({
+        id: st.id, name: st.name, archetype: st.archetype,
+        stopPct: st.stopPct, takeProfitPct: st.takeProfitPct, trailingPct: st.trailingPct, maxHoldDays: st.maxHoldDays,
+        ...(stratRationale[st.id] || {}),
+      })),
+    }));
+    // 백테스트(최근 1년)
+    const btOut = { generatedAt: updatedAt, periodDays: cfg.lookbackDays, startCash: cfg.startCash, costs, strategies: {} };
+    for (const st of sim.STRATEGIES) {
+      const res = sim.runPortfolioBacktest(simUniverse, st, cfg);
+      btOut.strategies[st.id] = { name: st.name, metrics: res.metrics, equityCurve: res.equityCurve, trades: res.trades };
+      console.log(`  [백테스트] ${st.name}: ${res.metrics.trades}건 · 수익률 ${res.metrics.totalReturnPct}% · 승률 ${res.metrics.winRate}% · MDD ${res.metrics.mddPct}%`);
+    }
+    fs.writeFileSync(path.join(SIM_DIR, 'backtest.json'), JSON.stringify(btOut));
+    // 모의투자(이전 상태 이어받아 1스텝 전진)
+    for (const st of sim.STRATEGIES) {
+      const pf = path.join(SIM_DIR, `paper_${st.id}.json`);
+      let prev = null;
+      try { prev = JSON.parse(fs.readFileSync(pf, 'utf8')); } catch { prev = null; }
+      const next = sim.advancePaper(prev, simUniverse, st, cfg);
+      fs.writeFileSync(pf, JSON.stringify(next));
+    }
+    console.log(`시뮬레이션 완료: 백테스트 ${sim.STRATEGIES.length}종 + 모의투자 ${sim.STRATEGIES.length}계좌`);
+  } catch (e) {
+    console.error('시뮬레이션 실패(빌드는 계속):', e.message);
+  }
+
   // --- alerts.json ---
   const alertStat = buildAlerts(scored, updatedAt);
   console.log(`alerts.json: 신규 ${alertStat.fresh}건 / 30일 이력 총 ${alertStat.total}건`);
