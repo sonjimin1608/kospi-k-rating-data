@@ -62,7 +62,7 @@ function parseFchart(xml) {
 }
 
 async function fetchCandles(code) {
-  const xml = await fetchText(`https://fchart.stock.naver.com/sise.nhn?symbol=${code}&timeframe=day&count=300&requestType=0`);
+  const xml = await fetchText(`https://fchart.stock.naver.com/sise.nhn?symbol=${code}&timeframe=day&count=600&requestType=0`);
   return parseFchart(xml);
 }
 

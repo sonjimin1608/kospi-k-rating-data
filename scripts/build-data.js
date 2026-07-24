@@ -240,7 +240,7 @@ function parseIntegration(integ) {
 async function fetchStockRaw(meta, idx, total) {
   const { code, name } = meta;
   const chartXml = await fetchText(
-    `https://fchart.stock.naver.com/sise.nhn?symbol=${code}&timeframe=day&count=300&requestType=0`
+    `https://fchart.stock.naver.com/sise.nhn?symbol=${code}&timeframe=day&count=600&requestType=0`
   );
   const candles = parseFchart(chartXml);
   if (candles.length < 70) throw new Error(`일봉 부족 (${candles.length}개)`);
@@ -406,8 +406,9 @@ function computeTechnicals(candles, integ) {
   let high52 = integ ? integ.high52 : null;
   let low52 = integ ? integ.low52 : null;
   if (high52 == null || low52 == null || high52 <= low52) {
-    high52 = Math.max(...closes);
-    low52 = Math.min(...closes);
+    const w52 = closes.slice(-250); // 최근 약 1년 구간으로 근사(캔들 이력 길이와 무관하게 고정)
+    high52 = Math.max(...w52);
+    low52 = Math.min(...w52);
     pos52Approx = true;
   }
   if (high52 > low52) pos52 = clamp(((closes[last] - low52) / (high52 - low52)) * 100, 0, 100);

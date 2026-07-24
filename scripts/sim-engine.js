@@ -292,6 +292,49 @@ const STRATEGIES = [
     },
   },
   {
+    id: 'alpha_multifactor_regime',
+    name: '다요인 모멘텀 알파 + 시장 레짐 필터',
+    archetype: '진화 최적화 · 레짐 필터',
+    stopPct: 8, takeProfitPct: 23, trailingPct: 0, maxHoldDays: 17,
+    sizing: SIZING_RISK(2.0, 25, 5),
+    regimeFilter: true,
+    entry(ind, i, c) {
+      const { macd, signal, hist, ma60, pctB } = ind;
+      const sc = multifactorScore(ind, i, c);
+      if (!sc || [macd[i], signal[i], hist[i], ma60[i], pctB[i]].some((v) => !isNum(v))) return false;
+      return sc.score >= 74 && sc.agree >= 3 && macd[i] > signal[i] && hist[i] > 0 &&
+        c[i].close > ma60[i] && pctB[i] >= 0.5;
+    },
+    exitSignal(ind, i, c) {
+      const { ma20, ma60 } = ind;
+      if (deadCross(ind, i)) return true;
+      if (isNum(ma20[i]) && c[i].close < ma20[i]) return true;
+      if (isNum(ma60[i]) && c[i].close < ma60[i]) return true;
+      return false;
+    },
+  },
+  {
+    id: 'alpha_breakout_ma20_regime',
+    name: '신고가 추세 알파 + 시장 레짐 필터',
+    archetype: '진화 최적화 · 레짐 필터',
+    stopPct: 7, takeProfitPct: 28, trailingPct: 0, maxHoldDays: 17,
+    sizing: SIZING_RISK(2.0, 25, 5),
+    regimeFilter: true,
+    entry(ind, i, c) {
+      const { ma20, hi20, mom20 } = ind;
+      const sc = multifactorScore(ind, i, c);
+      if (!sc || [ma20[i], hi20[i], mom20[i]].some((v) => !isNum(v))) return false;
+      return sc.score >= 74 && sc.agree >= 3 && c[i].close > ma20[i] && c[i].close > hi20[i] && mom20[i] > 0;
+    },
+    exitSignal(ind, i) {
+      const { macd, signal, hist } = ind;
+      if (deadCross(ind, i)) return true;
+      if (isNum(macd[i]) && isNum(signal[i]) && isNum(hist[i]) && isNum(hist[i - 1]) &&
+        macd[i] < signal[i] && hist[i] < hist[i - 1]) return true;
+      return false;
+    },
+  },
+  {
     id: 'macd_alert_combo',
     name: 'MACD 알림 + 콤보 매도',
     archetype: '알림 신호 · 매도 최적화',
@@ -301,6 +344,33 @@ const STRATEGIES = [
     exitSignal(ind, i) { return deadCross(ind, i); },
   },
 ];
+
+/* ───────────────────────── 시장 레짐 필터 ─────────────────────────
+ * 유니버스 전체로 등가중 시장지수를 만들고 MA200 위일 때만 신규 매수를 허용한다.
+ * (지수 200일선 아래 구간의 매수를 걸러 낙폭을 줄이는, 널리 검증된 오버레이)
+ * 반환: Map(date → true/false). 지수 이력이 부족한 구간은 true(필터 미적용).
+ */
+function buildRegime(stocks, allDates, period = 200) {
+  const idx = [];
+  const base = new Map();
+  for (const d of allDates) {
+    let sum = 0, cnt = 0;
+    for (const s of stocks) {
+      const li = s.dateIdx.get(d);
+      if (li == null || !isNum(s.c[li].close)) continue;
+      if (!base.has(s.code)) base.set(s.code, s.c[li].close);
+      const b = base.get(s.code);
+      if (b > 0) { sum += s.c[li].close / b; cnt++; }
+    }
+    idx.push(cnt > 0 ? sum / cnt : null);
+  }
+  const ok = new Map();
+  for (let i = 0; i < allDates.length; i++) {
+    const ma = smaAt(idx, i, period);
+    ok.set(allDates[i], !isNum(ma) || !isNum(idx[i]) ? true : idx[i] > ma);
+  }
+  return ok;
+}
 
 /* ───────────────────────── 사이징(수량) ───────────────────────── */
 
@@ -369,6 +439,7 @@ function runPortfolioBacktest(universe, strat, cfg = DEFAULT_CFG) {
   const allDates = [...new Set(stocks.flatMap((s) => s.c.map((k) => k.date)))].sort();
   const windowDates = allDates.slice(-cfg.lookbackDays);
   if (windowDates.length === 0) return emptyResult(cfg);
+  const regimeOk = strat.regimeFilter ? buildRegime(stocks, allDates) : null;
 
   let cash = cfg.startCash;
   let lastEquity = cfg.startCash; // 전일 종가 기준 자산(사이징 기준 — 인과적)
@@ -434,9 +505,10 @@ function runPortfolioBacktest(universe, strat, cfg = DEFAULT_CFG) {
       p.pendingSignalExit = strat.exitSignal(s.ind, li, s.c);
     }
 
-    // C. 신규 진입 신호(오늘 종가) → 내일 체결 예약
+    // C. 신규 진입 신호(오늘 종가) → 내일 체결 예약 (레짐 필터 통과 시에만)
     const sig = [];
-    for (const s of stocks) {
+    if (regimeOk && regimeOk.get(date) === false) { pending = []; }
+    else for (const s of stocks) {
       if (positions.has(s.code)) continue;
       const li = s.dateIdx.get(date); if (li == null || li < 1) continue;
       if (strat.entry(s.ind, li, s.c)) sig.push(s.code);
@@ -549,10 +621,18 @@ function advancePaper(prevState, universe, strat, cfg = DEFAULT_CFG) {
     }
   }
 
-  // B. 신규 진입
+  // B. 신규 진입 (레짐 필터 통과 시에만)
   const heldCount = () => Object.keys(holdings).length;
   const cands = [];
-  for (const u of universe) {
+  let regimePass = true;
+  if (strat.regimeFilter) {
+    const stocksR = universe.filter((u) => u.candles && u.candles.length >= 61)
+      .map((u) => ({ code: u.code, c: u.candles, dateIdx: new Map(u.candles.map((k, ix) => [k.date, ix])) }));
+    const dts = [...new Set(stocksR.flatMap((s) => s.c.map((k) => k.date)))].sort();
+    const ok = buildRegime(stocksR, dts);
+    regimePass = ok.get(dts[dts.length - 1]) !== false;
+  }
+  if (regimePass) for (const u of universe) {
     if (holdings[u.code] || exitedNow.has(u.code)) continue;
     if (!u.candles || u.candles.length < 61) continue;
     const c = u.candles; const li = c.length - 1;
