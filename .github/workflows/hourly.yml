@@ -42,10 +42,12 @@ jobs:
         run: |
           node -e '
             const fs = require("fs");
-            const norm = (p) => { const j = JSON.parse(fs.readFileSync(p, "utf8")); delete j.updatedAt; return JSON.stringify(j); };
-            const same = norm("data/summary.json") === norm("public/data/summary.json");
-            fs.appendFileSync(process.env.GITHUB_OUTPUT, "changed=" + (same ? "no" : "yes") + "\n");
-            console.log(same ? "시장 데이터 무변경 — 커밋 스킵" : "데이터 변경 감지");
+            const norm = (p, drop) => { try { const j = JSON.parse(fs.readFileSync(p, "utf8")); (drop || []).forEach((k) => delete j[k]); return JSON.stringify(j); } catch { return "MISSING:" + p; } };
+            const sumSame = norm("data/summary.json", ["updatedAt"]) === norm("public/data/summary.json", ["updatedAt"]);
+            const btSame = norm("data/sim/backtest.json", ["generatedAt"]) === norm("public/data/sim/backtest.json", ["generatedAt"]);
+            const changed = !sumSame || !btSame;
+            fs.appendFileSync(process.env.GITHUB_OUTPUT, "changed=" + (changed ? "yes" : "no") + "\n");
+            console.log(changed ? ("데이터 변경 감지 (summary=" + (!sumSame) + ", backtest=" + (!btSame) + ")") : "무변경 — 커밋 스킵");
           '
 
       - name: Push new-signal notifications (ntfy)
