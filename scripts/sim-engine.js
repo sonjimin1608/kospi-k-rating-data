@@ -227,8 +227,9 @@ const STRATEGIES = [
     id: 'alpha_breakout_consensus',
     name: '돌파 합의 알파',
     archetype: '진화 최적화 · 돌파',
-    stopPct: 7, takeProfitPct: 26, trailingPct: 0, maxHoldDays: 17,
+    stopPct: 7, takeProfitPct: 26, trailingPct: 12, breakevenAtPct: 10, maxHoldDays: 17,
     sizing: SIZING_RISK(2.0, 25, 5),
+    notifyTrades: true, // 모의투자 매수/매도 체결 시 ntfy 푸시 발송 대상
     entry(ind, i, c) {
       const { macd, signal, hist, hi20, mom20 } = ind;
       const sc = multifactorScore(ind, i, c);
@@ -359,9 +360,13 @@ function decideExit(pos, bar, strat) {
   const H = isNum(bar.high) ? bar.high : bar.close;
   const L = isNum(bar.low) ? bar.low : bar.close;
   const trailStop = strat.trailingPct ? pos.peakClose * (1 - strat.trailingPct / 100) : -Infinity;
-  const effStop = Math.max(pos.stopBase, trailStop);
+  // 본전 스탑: 고점이 진입가 대비 breakevenAtPct% 이상 올랐던 적이 있으면, 손절선을 진입가(본전)까지 끌어올린다.
+  // (수익권에 진입했던 거래가 시간청산·재하락으로 손실 마감되는 것을 방지)
+  const beStop = strat.breakevenAtPct && pos.peakClose >= pos.entryPrice * (1 + strat.breakevenAtPct / 100)
+    ? pos.entryPrice : -Infinity;
+  const effStop = Math.max(pos.stopBase, trailStop, beStop);
   const take = pos.targetPrice;
-  const stopReason = effStop > pos.stopBase + 1e-9 ? '트레일청산' : '손절';
+  const stopReason = effStop <= pos.stopBase + 1e-9 ? '손절' : (beStop >= trailStop ? '본전청산' : '트레일청산');
   if (O <= effStop) return { reason: stopReason, fill: O };      // 갭다운
   if (O >= take) return { reason: '익절', fill: O };             // 갭업(손절 오분류 방지)
   if (L <= effStop) return { reason: stopReason, fill: effStop };
@@ -552,11 +557,13 @@ function advancePaper(prevState, universe, strat, cfg = DEFAULT_CFG) {
     const ind = recomputeIndicators(c);
     if (price > p.peakClose) p.peakClose = price; // 전진 시 실시간 피크(현재가 관측됨)
     const trailStop = strat.trailingPct ? p.peakClose * (1 - strat.trailingPct / 100) : -Infinity;
-    const effStop = Math.max(p.stopPrice, trailStop);
+    const beStop = strat.breakevenAtPct && p.peakClose >= p.entryPrice * (1 + strat.breakevenAtPct / 100)
+      ? p.entryPrice : -Infinity;
+    const effStop = Math.max(p.stopPrice, trailStop, beStop);
     let entryIx = c.findIndex((k) => k.date === p.entryDate); if (entryIx < 0) entryIx = li;
     const held = li - entryIx;
     let reason = null;
-    if (price <= effStop) reason = effStop > p.stopPrice + 1e-9 ? '트레일청산' : '손절';
+    if (price <= effStop) reason = effStop <= p.stopPrice + 1e-9 ? '손절' : (beStop >= trailStop ? '본전청산' : '트레일청산');
     else if (price >= p.targetPrice) reason = '익절';
     else if (held >= strat.maxHoldDays) reason = '시간청산';
     else if (strat.exitSignal(ind, li, c)) reason = '신호청산';

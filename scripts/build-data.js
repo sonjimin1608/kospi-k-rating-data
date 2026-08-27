@@ -2113,7 +2113,7 @@ async function main() {
       updatedAt, startCash: cfg.startCash, maxPositions: cfg.maxPositions, costs,
       strategies: sim.STRATEGIES.map((st) => ({
         id: st.id, name: st.name, archetype: st.archetype,
-        stopPct: st.stopPct, takeProfitPct: st.takeProfitPct, trailingPct: st.trailingPct, maxHoldDays: st.maxHoldDays,
+        stopPct: st.stopPct, takeProfitPct: st.takeProfitPct, trailingPct: st.trailingPct, breakevenAtPct: st.breakevenAtPct || null, maxHoldDays: st.maxHoldDays,
         sizing: sim.sizingOf(st, cfg),
         ...(stratRationale[st.id] || {}),
       })),
@@ -2132,14 +2132,23 @@ async function main() {
       console.log(`  [백테스트] ${st.name}: ${res.metrics.trades}건 · 수익률 ${res.metrics.totalReturnPct}% · 승률 ${res.metrics.winRate}% · MDD ${res.metrics.mddPct}%`);
     }
     fs.writeFileSync(path.join(SIM_DIR, 'backtest.json'), JSON.stringify(btOut));
-    // 모의투자(이전 상태 이어받아 1스텝 전진)
+    // 모의투자(이전 상태 이어받아 1스텝 전진) — notifyTrades 전략은 신규 체결을 감지해 알림 큐에 적재
+    const tradeKey = (t) => `${t.date}|${t.code}|${t.type}|${t.price}|${t.shares}`;
+    const paperNotifications = [];
     for (const st of sim.STRATEGIES) {
       const pf = path.join(SIM_DIR, `paper_${st.id}.json`);
       let prev = null;
       try { prev = JSON.parse(fs.readFileSync(pf, 'utf8')); } catch { prev = null; }
       const next = sim.advancePaper(prev, simUniverse, st, cfg);
       fs.writeFileSync(pf, JSON.stringify(next));
+      if (st.notifyTrades) {
+        const seen = new Set((prev && Array.isArray(prev.tradeLog) ? prev.tradeLog : []).map(tradeKey));
+        const fresh = (next.tradeLog || []).filter((t) => !seen.has(tradeKey(t)));
+        for (const t of fresh) paperNotifications.push({ strategyId: st.id, strategyName: st.name, ...t });
+      }
     }
+    fs.writeFileSync(path.join(SIM_DIR, 'paper_notify.json'), JSON.stringify({ updatedAt, notifications: paperNotifications }));
+    if (paperNotifications.length) console.log(`  모의투자 신규 체결 알림 대상: ${paperNotifications.length}건`);
     console.log(`시뮬레이션 완료: 백테스트 ${sim.STRATEGIES.length}종 + 모의투자 ${sim.STRATEGIES.length}계좌`);
   } catch (e) {
     console.error('시뮬레이션 실패(빌드는 계속):', e.message);

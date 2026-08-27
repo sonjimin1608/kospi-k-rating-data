@@ -74,6 +74,41 @@ jobs:
             })().catch((e) => { console.error("ntfy 발송 실패(빌드는 계속):", e.message); });
           '
 
+      - name: Push paper-trade notifications (ntfy)
+        # notifyTrades 전략의 신규 매수/매도 체결. 시세 diff와 무관하게 항상 확인(누락 방지).
+        run: |
+          node -e '
+            const fs = require("fs");
+            let j = { notifications: [] };
+            try { j = JSON.parse(fs.readFileSync("public/data/sim/paper_notify.json", "utf8")); } catch {}
+            const trades = j.notifications || [];
+            console.log("모의투자 신규 체결:", trades.length);
+            (async () => {
+              for (const t of trades) {
+                const isBuy = t.type === "buy";
+                const title = `K-Rating 모의투자 · ${t.strategyName} · ${isBuy ? "매수" : "매도"}`;
+                const amount = Number(t.price) * Number(t.shares);
+                const body = isBuy
+                  ? `${t.name}(${t.code}) ${t.shares}주 @ ${Number(t.price).toLocaleString("ko-KR")}원 (${amount.toLocaleString("ko-KR")}원) · 목표 ${Number(t.targetPrice).toLocaleString("ko-KR")}원`
+                  : `${t.name}(${t.code}) ${t.shares}주 @ ${Number(t.price).toLocaleString("ko-KR")}원 · ${t.reason} · 수익률 ${t.returnPct}% (${Number(t.pnl).toLocaleString("ko-KR")}원)`;
+                // 제목에 한글(비-ASCII)이 들어가므로 HTTP 헤더 대신 ntfy JSON 발행 API 사용
+                // (헤더에 UTF-8 문자를 직접 넣으면 fetch가 "Invalid character in header content"로 실패한다)
+                const res = await fetch("https://ntfy.sh/", {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json; charset=utf-8" },
+                  body: JSON.stringify({
+                    topic: "krating-gxsignal-7k2m4x",
+                    title,
+                    message: body,
+                    click: "https://kospi-k-rating.web.app/#/paper/" + encodeURIComponent(t.strategyId),
+                    tags: [isBuy ? "moneybag" : (Number(t.returnPct) >= 0 ? "chart_with_upwards_trend" : "chart_with_downwards_trend")],
+                  }),
+                });
+                console.log(t.strategyId, t.type, t.code, t.name, res.status);
+              }
+            })().catch((e) => { console.error("ntfy 발송 실패(빌드는 계속):", e.message); });
+          '
+
       - name: Commit & push
         if: steps.diff.outputs.changed == 'yes'
         run: |
